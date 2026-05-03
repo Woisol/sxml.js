@@ -1,0 +1,37 @@
+{
+  "name": "@woisol-g/sxml.js",
+  "version": "0.1.0",
+  "description": "Streaming XML parser for LLM output — incremental chunk input, structured event output",
+  "packageManager": "pnpm@10.33.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts",
+    "lint:fix": "eslint src --ext .ts --fix",
+    "test": "pnpm typecheck && node --import tsx --test src/**/*.test.ts",
+    "check": "pnpm lint && pnpm test",
+    "prepublishOnly": "pnpm check && pnpm build"
+  },
+  "keywords": [
+    "xml",
+    "streaming",
+    "llm",
+    "parser",
+    "sax",
+    "incremental"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.6.0",
+    "eslint": "^10.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.59.1"
+  }
+}

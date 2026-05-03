@@ -24,10 +24,8 @@ export class XmlProcessor {
       case 'elementClose':
         this.handleElementClose(event);
         break;
-      case 'selfClose':
         // Self-closing: passthrough, no stack change
-        this.eventQueue.push(event);
-        break;
+      case 'selfClose':
       case 'text':
       case 'error':
         // Passthrough
@@ -42,12 +40,12 @@ export class XmlProcessor {
   }
 
   /** Current tag stack depth */
-  depth(): number {
+  get depth(): number {
     return this.tagStack.length;
   }
 
   /** Top of tag stack (null if empty) */
-  topTag(): string | null {
+  get topTag(): string | null {
     return this.tagStack.length > 0 ? this.tagStack[this.tagStack.length - 1] : null;
   }
 

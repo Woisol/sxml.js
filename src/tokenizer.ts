@@ -324,6 +324,7 @@ export class Tokenizer {
       this.tagName += ch;
     } else {
       this.state = TokenizerState.TEXT;
+      this.processChar(ch); // re-process in TEXT (e.g. '<' → TAG_SUSPECTED)
     }
   }
 

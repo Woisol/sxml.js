@@ -507,19 +507,43 @@ export class SxmlParser {
 
   /** Emit a resolve result: text truncated + business event appended */
   private emitResolveResult(textEventIndex: number, bizEvent: SxmlEvent | null, appendOnly: boolean = false): void {
-    const update = textEventIndex >= 0 && textEventIndex < this.events.length
-      ? this.cloneEvent(this.events[textEventIndex]) : undefined;
+    const append: SxmlEvent[] = [];
+    let update: SxmlEvent | undefined = undefined;
 
-    const append: SxmlEvent[] = bizEvent ? [bizEvent] : [];
+    // Determine whether the text event at textEventIndex should be
+    // sent as an update (replaces consumer's last event) or as append.
+    if (textEventIndex >= 0 && textEventIndex < this.events.length) {
+      const textEv = this.events[textEventIndex];
+      const textContent = textEv.type === 'text' ? (textEv as TextEvent).content : '';
+
+      if (textEventIndex < this.consumerLen) {
+        // Consumer already knows about this text event.
+        // Only use update if no business events were emitted
+        // between this text event and the consumer's cursor —
+        // otherwise the update would overwrite a biz event.
+        let blocked = false;
+        for (let i = textEventIndex + 1; i < this.consumerLen && i < this.events.length; i++) {
+          if (this.events[i].type !== 'text') { blocked = true; break; }
+        }
+        if (!blocked && textContent.length > 0) {
+          update = this.cloneEvent(textEv);
+        } else if (blocked && textContent.length > 0) {
+          append.push(this.cloneEvent(textEv));
+        }
+      } else if (textContent.length > 0) {
+        // Consumer hasn't seen this event yet — append it
+        append.push(this.cloneEvent(textEv));
+      }
+    }
+
+    if (bizEvent) append.push(bizEvent);
 
     if (appendOnly) {
-      // Child absorbed: only text update, no append
       this.emitResult({ update, append: [] });
     } else {
       this.emitResult({ update, append });
     }
 
-    // Consumer now has all events
     this.consumerLen = this.events.length;
   }
 
@@ -561,11 +585,15 @@ export class SxmlParser {
 
     if (this.resultQueue.length > 0) {
       resolve(this.resultQueue.shift()!);
-    } else if (this.ended) {
-      const flushed = this.flushPendingTextOutput();
-      resolve(flushed);
     } else {
-      this.pendingResolve = resolve;
+      const flushed = this.flushPendingTextOutput();
+      if (flushed) {
+        resolve(flushed);
+      } else if (this.ended) {
+        resolve(null);
+      } else {
+        this.pendingResolve = resolve;
+      }
     }
   }
 }

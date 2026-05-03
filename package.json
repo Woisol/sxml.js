@@ -17,7 +17,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
-    "test": "pnpm typecheck && node --import tsx --test src/**/*.test.ts",
+    "test": "pnpm typecheck && node --import tsx --test test/**/*.test.ts",
     "check": "pnpm lint:fix && pnpm test",
     "prepare": "husky",
     "prepublishOnly": "pnpm check && pnpm build"

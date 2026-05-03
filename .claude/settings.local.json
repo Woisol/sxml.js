@@ -4,7 +4,9 @@
       "Bash(npm install *)",
       "Bash(npx tsc *)",
       "Bash(npx tsx *)",
-      "Bash(node --import tsx -e ' *)"
+      "Bash(node --import tsx -e ' *)",
+      "Bash(node -e \"try { require\\('./src/sxml-parser'\\); console.log\\('require OK'\\); } catch\\(e\\) { console.log\\('require failed:', e.message\\); }\")",
+      "Bash(node --import tsx -e \"require\\('./project/demo/demo.js'\\); console.log\\('Loaded OK'\\)\")"
     ]
   }
 }

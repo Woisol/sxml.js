@@ -1,0 +1,1 @@
+好，你最后在 project/demo/demo.js 下写一个接入实际 llm api 的 demo。配置放在文件开头方便修改。使用 CommonJS，允许直接启动。用命令行启动，交互式运行。暂定 think 和 tool_call 两个标签即可，自己拟一个 System Prompt。Demo 按下面要求输出：普通 text 直接输出，think 块用灰色单独一行输出，tool_call 块用红色输出。如果需要 update，使用 \r 等覆盖先前输出（如果需要，在后面加上空格来确保覆盖）。你来试一下

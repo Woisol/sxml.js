@@ -191,14 +191,39 @@ export class SxmlParser {
     // pendingText includes everything since last event, e.g. "text<before<tagname>"
     // Find where '<' of this tag sits in pendingText
     const tagIdx = this.pendingText.indexOf('<');
-    const tagOffsetInPending = tagIdx >= 0 ? tagIdx : 0;
-    // The open tag is the part from '<' to end of pendingText
-    const openTagLength = this.pendingText.length - tagOffsetInPending;
+    const pendingLen = this.pendingText.length;
+    let rawTextStartOffset: number;
+    let openTagLength: number;
+    let result: { eventIndex: number; offset: number };
 
-    const result = this.commitPendingText();
+    if (tagIdx >= 0) {
+      // '<' found in current pendingText
+      openTagLength = pendingLen - tagIdx;
+      result = this.commitPendingText();
+      rawTextStartOffset = result.offset + tagIdx;
+    } else {
+      // '<' was committed in a previous flush (or there's no pending text).
+      // Search backwards in the last text event for the '<'.
+      const lastIdx = this.events.length - 1;
+      const lastEv = lastIdx >= 0 ? this.events[lastIdx] : null;
+      result = this.commitPendingText();
 
-    // Where '<' is in the text event
-    const rawTextStartOffset = result.offset + tagOffsetInPending;
+      if (lastEv && lastEv.type === 'text') {
+        const lastContent = (lastEv as TextEvent).content;
+        // content before pendingText was appended: first {result.offset} chars
+        const ltPos = lastContent.lastIndexOf('<', result.offset - 1);
+        if (ltPos >= 0) {
+          rawTextStartOffset = ltPos;
+          openTagLength = (result.offset - ltPos) + pendingLen;
+        } else {
+          rawTextStartOffset = result.offset;
+          openTagLength = pendingLen;
+        }
+      } else {
+        rawTextStartOffset = result.offset;
+        openTagLength = pendingLen;
+      }
+    }
 
     const entry: OpenTagEntry = {
       name,
@@ -525,9 +550,9 @@ export class SxmlParser {
         for (let i = textEventIndex + 1; i < this.consumerLen && i < this.events.length; i++) {
           if (this.events[i].type !== 'text') { blocked = true; break; }
         }
-        if (!blocked && textContent.length > 0) {
+        if (!blocked) {
           update = this.cloneEvent(textEv);
-        } else if (blocked && textContent.length > 0) {
+        } else if (textContent.length > 0) {
           append.push(this.cloneEvent(textEv));
         }
       } else if (textContent.length > 0) {

@@ -3,8 +3,11 @@ import assert from 'node:assert';
 import { SxmlParser, SxmlConfig, SxmlResult } from '../src/index';
 
 /**
- * Helper: collect all results from a parser that processes chunks
- * with intermediate pull() calls between chunks (streaming simulation)
+ * Helper: collect all events from a parser that processes chunks
+ * with intermediate pull() calls between chunks (streaming simulation).
+ *
+ * Returns the final event list; empty text events (content === '') are
+ * filtered out since they represent consumed/cleared text.
  */
 function simulateStreaming(
   chunks: string[],
@@ -12,13 +15,11 @@ function simulateStreaming(
   options?: { pullBetweenChunks?: boolean }
 ): any[] {
   const parser = new SxmlParser(config);
-  const allResults: SxmlResult[] = [];
   const events: any[] = [];
 
   function drain() {
     let r: SxmlResult | null;
     while ((r = parser.tryPull()) !== null) {
-      allResults.push(r);
       if (r.update) events[events.length - 1] = r.update;
       events.push(...r.append);
     }
@@ -31,15 +32,36 @@ function simulateStreaming(
   parser.end();
   drain();
 
-  return events;
+  // Filter out empty text events — they represent consumed text, not content
+  return events.filter((e: any) => e.type !== 'text' || e.content !== '');
+}
+
+/**
+ * Strip internal fields (name) that are not relevant for content comparison.
+ * The `name` field is always set to the tag name by DefaultTagHandler.
+ */
+function cleanEvent(e: any) {
+  const { name, ...rest } = e;
+  void name; // not used in comparison
+  return rest;
+}
+
+/**
+ * Compute the "content total": all text event contents joined together.
+ */
+function contentSum(events: any[]): string {
+  return events
+    .filter((e: any) => e.type === 'text')
+    .map((e: any) => e.content)
+    .join('');
 }
 
 // ============================================================
-// Realistic simulation scenarios
+// Simulation scenarios
 // ============================================================
 
 describe('simulation', () => {
-  // Claude-style: text → think → text
+
   it('should stream text before, during, and after a think tag', () => {
     const chunks = [
       '让我想一想',
@@ -55,28 +77,17 @@ describe('simulation', () => {
 
     const events = simulateStreaming(chunks, { legalTags: ['think'] });
 
-    // Should have text events for all the streaming text
-    const textEvents = events.filter((e: any) => e.type === 'text');
-    const allText = textEvents.map((t: any) => t.content).join('');
+    // Exact event sequence
+    assert.strictEqual(events.length, 3);
+    assert.deepStrictEqual(cleanEvent(events[0]), { type: 'text', content: '让我想一想 嗯,这个问题需要我仔细思考一下' });
+    assert.deepStrictEqual(cleanEvent(events[1]), { type: 'think', content: '首先用户说的是一个编程问题,然后我考虑了几种实现方案' });
+    assert.deepStrictEqual(cleanEvent(events[2]), { type: 'text', content: '好的,根据以上分析,我的回答是...' });
 
-    assert.ok(allText.includes('让我想一想'), 'Opening text should be present');
-    assert.ok(allText.includes('嗯,这个问题需要我仔细思考一下'), 'Chinese text should be present');
-    assert.ok(allText.includes('好的,根据以上分析,我的回答是...'), 'Closing text should be present');
-
-    // Should have a think business event
-    const thinkEvent = events.find((e: any) => e.type === 'think');
-    assert.ok(thinkEvent, 'Should have think business event');
-    assert.ok(
-      (thinkEvent.content as string).includes('首先用户说的是一个编程问题'),
-      'Think content should contain the thinking text'
-    );
-    assert.ok(
-      (thinkEvent.content as string).includes('我考虑了几种实现方案'),
-      'Think content should contain all thinking text'
-    );
+    // Verify full text reconstruction matches original text outside tags
+    const textSum = contentSum(events);
+    assert.strictEqual(textSum, '让我想一想 嗯,这个问题需要我仔细思考一下好的,根据以上分析,我的回答是...');
   });
 
-  // Claude: tool call with thinking
   it('should handle think + tool_call flow', () => {
     const chunks = [
       '我来查一下天气',
@@ -90,41 +101,32 @@ describe('simulation', () => {
 
     const events = simulateStreaming(chunks, { legalTags: ['think', 'tool_call'] });
 
-    const thinkEvent = events.find((e: any) => e.type === 'think');
-    assert.ok(thinkEvent, 'Should have think event');
-    assert.ok(
-      (thinkEvent.content as string).includes('用户需要知道今天的天气'),
-      'Think content should be present'
-    );
-
-    const toolEvent = events.find((e: any) => e.type === 'tool_call');
-    assert.ok(toolEvent, 'Should have tool_call event');
-    assert.strictEqual(toolEvent.name, 'get_weather');
-    assert.ok(toolEvent.content === '' || toolEvent.content === undefined,
-      'Self-closing tool_call should have no content'
-    );
+    assert.strictEqual(events.length, 3);
+    assert.deepStrictEqual(cleanEvent(events[0]), { type: 'text', content: '我来查一下天气' });
+    assert.deepStrictEqual(cleanEvent(events[1]), { type: 'think', content: '用户需要知道今天的天气' });
+    // tool_call with attributes
+    assert.strictEqual(events[2].type, 'tool_call');
+    assert.strictEqual(events[2].content, '');
+    assert.strictEqual(events[2].name, 'get_weather');
+    assert.strictEqual(events[2].city, 'Beijing');
   });
 
-  // Complex tool call with nested attribute quoting
   it('should handle tool_call with JSON args attribute', () => {
     const chunks = [
       '<tool_call name="search"',
-      ' args=\'{"query": "weather", "units": "metric"}\'>',
+      ` args='{"query": "weather", "units": "metric"}'>`,
       '</tool_call>',
     ];
 
     const events = simulateStreaming(chunks, { legalTags: ['tool_call'] });
-    const tool = events.find((e: any) => e.type === 'tool_call');
-    assert.ok(tool, 'Should have tool_call event');
-    assert.strictEqual(tool.name, 'search');
-    // JSON string in single-quoted attribute
-    const args = tool.args as string;
-    assert.ok(args.includes('query'), 'Args should contain query');
-    assert.ok(args.includes('weather'), 'Args should contain weather');
-    assert.ok(args.includes('metric'), 'Args should contain units');
+
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].type, 'tool_call');
+    assert.strictEqual(events[0].content, '');
+    assert.strictEqual(events[0].name, 'search');
+    assert.strictEqual(events[0].args, '{"query": "weather", "units": "metric"}');
   });
 
-  // Multiple tool calls with text between
   it('should handle multiple tool calls with interleaved text', () => {
     const chunks = [
       '首先<tool_call name="calc" expression="1+1">',
@@ -137,25 +139,22 @@ describe('simulation', () => {
 
     const events = simulateStreaming(chunks, { legalTags: ['tool_call'] });
 
-    const toolCalls = events.filter((e: any) => e.type === 'tool_call');
-    assert.strictEqual(toolCalls.length, 2, 'Should have two tool_call events');
+    assert.strictEqual(events.length, 5);
+    assert.deepStrictEqual(cleanEvent(events[0]), { type: 'text', content: '首先' });
+    assert.strictEqual(events[1].type, 'tool_call');
+    assert.strictEqual(events[1].name, 'calc');
+    assert.strictEqual(events[1].expression, '1+1');
+    assert.deepStrictEqual(cleanEvent(events[2]), { type: 'text', content: '结果是2接下来' });
+    assert.strictEqual(events[3].type, 'tool_call');
+    assert.strictEqual(events[3].name, 'search');
+    assert.strictEqual(events[3].q, 'hello');
+    assert.deepStrictEqual(cleanEvent(events[4]), { type: 'text', content: '搜索完成' });
 
-    const calc = toolCalls[0];
-    assert.strictEqual(calc.name, 'calc');
-    assert.strictEqual(calc.expression, '1+1');
-
-    const search = toolCalls[1];
-    assert.strictEqual(search.name, 'search');
-    assert.strictEqual(search.q, 'hello');
-
-    const textEvents = events.filter((e: any) => e.type === 'text');
-    const allText = textEvents.map((t: any) => t.content).join('');
-    assert.ok(allText.includes('首先'), 'Text before first tool should be present');
-    assert.ok(allText.includes('结果是2'), 'Text between tools should be present');
-    assert.ok(allText.includes('搜索完成'), 'Text after last tool should be present');
+    // Verify no content loss
+    const textSum = contentSum(events);
+    assert.strictEqual(textSum, '首先结果是2接下来搜索完成');
   });
 
-  // Text containing angle brackets (like generics, comparisons)
   it('should handle text containing angle brackets', () => {
     const chunks = [
       'In C++ we write vector<int>',
@@ -167,18 +166,28 @@ describe('simulation', () => {
 
     const events = simulateStreaming(chunks, { legalTags: ['think'] });
 
-    const thinkEvent = events.find((e: any) => e.type === 'think');
-    assert.ok(thinkEvent, 'Should extract think tag despite angle brackets in text');
+    assert.strictEqual(events.length, 3);
+    assert.deepStrictEqual(cleanEvent(events[0]), {
+      type: 'text',
+      content: 'In C++ we write vector<int> and compare a < b. In TypeScript, Array<string> is common.',
+    });
+    assert.deepStrictEqual(cleanEvent(events[1]), {
+      type: 'think',
+      content: 'The user is asking about C++ templates',
+    });
+    assert.deepStrictEqual(cleanEvent(events[2]), {
+      type: 'text',
+      content: 'So the type parameter goes inside < and >.',
+    });
 
-    const textEvents = events.filter((e: any) => e.type === 'text');
-    const allText = textEvents.map((t: any) => t.content).join('');
-    assert.ok(allText.includes('vector<int>'), 'Angle bracket text before tag should be preserved');
-    assert.ok(allText.includes('a < b'), 'Less-than in text should be preserved');
-    assert.ok(allText.includes('Array<string>'), 'Generic syntax should be preserved');
-    assert.ok(allText.includes('inside < and >'), 'Angle bracket text after tag should be preserved');
+    // Verify < > in text are preserved, not consumed as tags
+    const textSum = contentSum(events);
+    assert.ok(textSum.includes('vector<int>'));
+    assert.ok(textSum.includes('a < b'));
+    assert.ok(textSum.includes('Array<string>'));
+    assert.ok(textSum.includes('inside < and >'));
   });
 
-  // Self-closing tags with text
   it('should handle many self-closing tags in a line', () => {
     const chunks = [
       '<br/><br/>',
@@ -194,12 +203,11 @@ describe('simulation', () => {
     assert.strictEqual(hrs.length, 1, 'Should have 1 hr event');
 
     const textEvents = events.filter((e: any) => e.type === 'text');
-    const allText = textEvents.map((t: any) => t.content).join('');
-    assert.ok(allText.includes('line break'), 'Text between tags should be preserved');
-    assert.ok(allText.includes('separator'), 'Text after tags should be preserved');
+    assert.strictEqual(textEvents.length, 2);
+    assert.deepStrictEqual(cleanEvent(textEvents[0]), { type: 'text', content: 'line break' });
+    assert.deepStrictEqual(cleanEvent(textEvents[1]), { type: 'text', content: 'separator' });
   });
 
-  // Large text with a tag - single chunk
   it('should handle long text with embedded tag', () => {
     const longText = 'A'.repeat(5000);
     const chunks = [
@@ -209,36 +217,25 @@ describe('simulation', () => {
     const events = simulateStreaming(chunks, { legalTags: ['think'] });
 
     const thinkEvent = events.find((e: any) => e.type === 'think');
-    assert.ok(thinkEvent, 'Should extract think from long text');
+    assert.ok(thinkEvent);
     assert.strictEqual(thinkEvent.content, '思考');
 
-    const textEvents = events.filter((e: any) => e.type === 'text');
-    const allText = textEvents.map((t: any) => t.content).join('');
-    assert.strictEqual(
-      (allText.match(/A/g) || []).length,
-      10000,
-      'All As should be preserved (5000 before + 5000 after)'
-    );
+    const textSum = contentSum(events);
+    assert.strictEqual(textSum, longText + longText);
   });
 
-  // Chunks at every character boundary for a tag
   it('should handle one-character-at-a-time streaming', () => {
     const input = 'text<think>深</think>more';
-    const chunks = input.split(''); // One char per chunk
+    const chunks = input.split('');
 
     const events = simulateStreaming(chunks, { legalTags: ['think'] });
 
-    const thinkEvent = events.find((e: any) => e.type === 'think');
-    assert.ok(thinkEvent, 'Should extract think from character-level streaming');
-    assert.strictEqual(thinkEvent.content, '深');
-
-    const textEvents = events.filter((e: any) => e.type === 'text');
-    const allText = textEvents.map((t: any) => t.content).join('');
-    assert.ok(allText.startsWith('text'), 'Text before tag should be preserved');
-    assert.ok(allText.endsWith('more'), 'Text after tag should be preserved');
+    assert.strictEqual(events.length, 3);
+    assert.deepStrictEqual(cleanEvent(events[0]), { type: 'text', content: 'text' });
+    assert.deepStrictEqual(cleanEvent(events[1]), { type: 'think', content: '深' });
+    assert.deepStrictEqual(cleanEvent(events[2]), { type: 'text', content: 'more' });
   });
 
-  // Close tag split across chunks at realistic token boundaries
   it('should handle close tag split across chunks', () => {
     const chunks = [
       '<tool_call name="test"',
@@ -249,13 +246,12 @@ describe('simulation', () => {
     const events = simulateStreaming(chunks, { legalTags: ['tool_call'] });
 
     const tool = events.find((e: any) => e.type === 'tool_call');
-    assert.ok(tool, 'Should parse tool_call despite close tag split');
-    assert.strictEqual(tool.content, 'analyze');
+    assert.ok(tool);
     assert.strictEqual(tool.name, 'test');
+    assert.strictEqual(tool.content, 'analyze');
   });
 
-  // Complex nesting where depth is exceeded at various points
-  it('should handle partial deep nesting across chunks', () => {
+  it('should handle deep nesting with maxNestingDepth=1', () => {
     const chunks = [
       '<1><2>',
       '<3>deep</3>',
@@ -267,16 +263,13 @@ describe('simulation', () => {
       maxNestingDepth: 1,
     });
 
-    const tag1 = events.find((e: any) => e.type === '1');
-    assert.ok(tag1, 'Tag 1 should be parsed');
-    assert.strictEqual(
-      tag1['2'],
-      '<3>deep</3>',
-      'Tag 2 should contain raw <3> text since depth exceeds limit'
-    );
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].type, '1');
+    assert.strictEqual(events[0].content, '');
+    // Tag 3 is beyond depth 1 → raw XML inside tag 2 → absorbed as attr of tag 1
+    assert.strictEqual(events[0]['2'], '<3>deep</3>');
   });
 
-  // Text only with NO tags
   it('should handle pure text with no XML tags', () => {
     const chunks = [
       'This is a long text with no tags at all. ',
@@ -287,37 +280,23 @@ describe('simulation', () => {
 
     const events = simulateStreaming(chunks, { legalTags: ['think'] });
 
-    const textEvents = events.filter((e: any) => e.type === 'text');
-    assert.ok(textEvents.length >= 1, 'Should have text events');
-    const allText = textEvents.map((t: any) => t.content).join('');
-    assert.ok(allText.includes('This is a long text'));
-    assert.ok(allText.includes('The end.'));
-    assert.strictEqual(
-      events.find((e: any) => e.type !== 'text'),
-      undefined,
-      'Only text events should be emitted'
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].type, 'text');
+    const expected = 'This is a long text with no tags at all. It just keeps going and going. No < or > should cause any issues. The end.';
+    assert.strictEqual(events[0].content, expected);
+  });
+
+  it('should handle a tag with no surrounding text', () => {
+    const events = simulateStreaming(
+      ['<book>content</book>'],
+      { legalTags: ['book'] }
     );
+
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0].type, 'book');
+    assert.strictEqual(events[0].content, 'content');
   });
 
-  // Tag with no text around it
-  it('should handle a tag surrounded by no text content', () => {
-    const chunks = [
-      '<book>content</book>',
-    ];
-
-    const events = simulateStreaming(chunks, { legalTags: ['book'] });
-
-    const book = events.find((e: any) => e.type === 'book');
-    assert.ok(book, 'Should have book event');
-    assert.strictEqual(book.content, 'content');
-
-    const textEvents = events.filter((e: any) => e.type === 'text');
-    // The text events are internal and may be empty strings
-    // The book event is the only meaningful event
-    assert.strictEqual(book.content, 'content');
-  });
-
-  // Multiple think tags (thinking and re-thinking pattern)
   it('should handle multiple think tags in sequence', () => {
     const chunks = [
       '<think>first thought</think>',
@@ -327,13 +306,9 @@ describe('simulation', () => {
 
     const events = simulateStreaming(chunks, { legalTags: ['think'] });
 
-    const thinks = events.filter((e: any) => e.type === 'think');
-    assert.strictEqual(thinks.length, 2, 'Should have two think events');
-    assert.strictEqual(thinks[0].content, 'first thought');
-    assert.strictEqual(thinks[1].content, 'second thought');
-
-    const textEvents = events.filter((e: any) => e.type === 'text');
-    const allText = textEvents.map((t: any) => t.content).join('');
-    assert.ok(allText.includes('intervening text'), 'Text between thinks should be preserved');
+    assert.strictEqual(events.length, 3);
+    assert.deepStrictEqual(cleanEvent(events[0]), { type: 'think', content: 'first thought' });
+    assert.deepStrictEqual(cleanEvent(events[1]), { type: 'text', content: 'intervening text' });
+    assert.deepStrictEqual(cleanEvent(events[2]), { type: 'think', content: 'second thought' });
   });
 });

@@ -9,12 +9,16 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "clean:dist": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build:types": "tsc -p tsconfig.build.json",
+    "build:bundle": "webpack --config webpack.config.cjs",
+    "build": "pnpm clean:dist && pnpm build:types && pnpm build:bundle",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
     "test": "pnpm typecheck && node --import tsx --test src/**/*.test.ts",
-    "check": "pnpm lint && pnpm test",
+    "check": "pnpm lint:fix && pnpm test",
+    "prepare": "husky",
     "prepublishOnly": "pnpm check && pnpm build"
   },
   "keywords": [
@@ -30,8 +34,12 @@
     "@eslint/js": "^10.0.1",
     "@types/node": "^25.6.0",
     "eslint": "^10.3.0",
+    "husky": "^9.1.7",
+    "ts-loader": "^9.5.7",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
-    "typescript-eslint": "^8.59.1"
+    "typescript-eslint": "^8.59.1",
+    "webpack": "^5.106.2",
+    "webpack-cli": "^7.0.2"
   }
 }

@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "description": "Streaming XML parser for LLM output — incremental chunk input, structured event output",
   "packageManager": "pnpm@10.33.0",
-  "main": "dist/index.js",
+  "main": "dist/sxml.js",
   "types": "dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
   "scripts": {
-    "clean:dist": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "clean:dist": "rm -rf dist",
     "build:types": "tsc -p tsconfig.build.json",
     "build:bundle": "webpack --config webpack.config.cjs",
     "build": "pnpm clean:dist && pnpm build:types && pnpm build:bundle",
@@ -29,7 +30,20 @@
     "sax",
     "incremental"
   ],
-  "license": "MIT",
+  "author": "Woisol",
+  "license": "ISC",
+  "homepage": "https://github.com/woisol/sxml.js#readme",
+  "bugs": {
+    "url": "https://github.com/woisol/sxml.js/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/woisol/sxml.js.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^25.6.0",

@@ -36,6 +36,11 @@ const DefaultTagHandler: TagHandler = {
   },
 };
 
+interface QueuedResult {
+  result: SxmlResult;
+  lastConfirm: boolean;
+}
+
 export class SxmlParser {
   private tokenizer: Tokenizer;
   private xmlProcessor: XmlProcessor;
@@ -44,11 +49,12 @@ export class SxmlParser {
   private events: SxmlEvent[] = [];
   private pendingText: string = '';
   private tagStack: OpenTagEntry[] = [];
-  private resultQueue: SxmlResult[] = [];
+  private resultQueue: QueuedResult[] = [];
   private pendingResolve: ((value: SxmlResult | null) => void) | null = null;
   private ended: boolean = false;
   private consumerLen: number = 0; // how many events consumer has seen
   private confirmAtOpenSet: Set<string> = new Set();
+  private lastConfirmStable: boolean = false;
 
   constructor(config: SxmlConfig) {
     this.tagHandlers = config.tagHandlers ?? {};
@@ -85,6 +91,14 @@ export class SxmlParser {
   // Public API
   // ============================================================
 
+  get isEnd(): boolean {
+    return this.ended;
+  }
+
+  get lastConfirm(): boolean {
+    return this.lastConfirmStable;
+  }
+
   write(chunk: string): void {
     if (this.ended) return;
     this.tokenizer.write(chunk);
@@ -114,6 +128,7 @@ export class SxmlParser {
     this.pendingResolve = null;
     this.ended = false;
     this.consumerLen = 0;
+    this.lastConfirmStable = false;
   }
 
   async pull(): Promise<SxmlResult | null> {
@@ -129,7 +144,7 @@ export class SxmlParser {
   tryPull(): SxmlResult | null {
     this.processTokenizerEvents();
     if (this.resultQueue.length > 0) {
-      return this.resultQueue.shift()!;
+      return this.dequeueResult();
     }
     return this.flushPendingTextOutput();
   }
@@ -177,12 +192,11 @@ export class SxmlParser {
 
     const bizIdx = top.childrenStartIndex - 1;
     if (bizIdx < 0 || bizIdx >= this.events.length) return;
-    const be = this.events[bizIdx] as BusinessEvent;
-    be.content = ((be.content as string) || '') + this.pendingText;
-    this.pendingText = '';
-
-    // Emit an update so the consumer sees the live content
-    this.emitResult({ update: this.cloneEvent(be), append: [] });
+          const be = this.events[bizIdx] as BusinessEvent;
+          be.content = ((be.content as string) || '') + this.pendingText;
+          this.pendingText = '';
+          // Emit an update so the consumer sees the live content
+          this.emitResult({ update: this.cloneEvent(be), append: [] }, false);
   }
 
   private flushL2Events(): void {
@@ -294,7 +308,7 @@ export class SxmlParser {
 
         // Emit text truncation update + partial biz append
         const append: SxmlEvent[] = [];
-        let update: SxmlEvent | undefined;
+        let update: SxmlEvent | null | undefined;
 
         if (this.consumerLen === 0 && result.eventIndex >= 0) {
           // First event ever — append text (if non-empty) before partial biz
@@ -304,7 +318,7 @@ export class SxmlParser {
           }
         } else if (result.eventIndex >= 0 && result.eventIndex < this.consumerLen) {
           // Consumer already has this text event — update it
-          update = this.cloneEvent(this.events[result.eventIndex]);
+          update = this.cloneTextUpdateOrClear(this.events[result.eventIndex]);
         } else if (result.eventIndex >= this.consumerLen && result.eventIndex < this.events.length) {
           // New text event consumer hasn't seen — append it
           const te = this.events[result.eventIndex];
@@ -315,13 +329,16 @@ export class SxmlParser {
 
         append.push(this.cloneEvent(partialBiz));
         // Record where think lands in consumer's list:
-        //   if update → consumer's last event is replaced, then append runs
-        //   if !update → consumer appends everything
-        entry.bizEventConsumerIndex = update
-          ? this.consumerLen - 1 + append.length  // update replaces last, then append
-          : this.consumerLen + append.length - 1; // pure append, think is last
+        //   event update replaces one item, null update removes one item, then append runs
+        //   no update appends everything after the current consumer length
+        const consumerLenAfterUpdate = update === undefined
+          ? this.consumerLen
+          : update === null
+            ? this.consumerLen - 1
+            : this.consumerLen;
+        entry.bizEventConsumerIndex = consumerLenAfterUpdate + append.length - 1;
 
-        this.emitResult({ update, append });
+        this.emitResult({ update, append }, false);
         this.consumerLen = this.events.length;
         this.tagStack.push(entry);
         return;
@@ -404,14 +421,14 @@ export class SxmlParser {
         if (parent.useDefaultHandler && entry.useDefaultHandler) {
           parent.pendingChildren.push(bizEvent);
           this.events[partialIdx] = bizEvent;
-          this.emitResult({ update: this.cloneEvent(bizEvent), append: [] });
+          this.emitResult({ update: this.cloneEvent(bizEvent), append: [] }, true);
           this.consumerLen = this.events.length;
           return;
         }
       }
 
       this.events[partialIdx] = bizEvent;
-      this.emitResult({ update: this.cloneEvent(bizEvent), append: [] });
+      this.emitResult({ update: this.cloneEvent(bizEvent), append: [] }, true);
       this.consumerLen = this.events.length;
       return;
     }
@@ -442,7 +459,7 @@ export class SxmlParser {
     }
 
     this.events.push(bizEvent);
-    this.emitResolveResult(entry.rawTextEventIndex, bizEvent);
+    this.emitResolveResult(entry.rawTextEventIndex, bizEvent, false, true);
   }
 
   private handleSelfClose(name: string, attributes: Record<string, string>): void {
@@ -472,7 +489,7 @@ export class SxmlParser {
 
     if (bizEvent) {
       this.events.push(bizEvent);
-      this.emitResolveResult(textEventIndex, bizEvent);
+      this.emitResolveResult(textEventIndex, bizEvent, false, true);
     }
   }
 
@@ -505,14 +522,14 @@ export class SxmlParser {
         if (parent.useDefaultHandler && entry.useDefaultHandler) {
           parent.pendingChildren.push(bizEvent);
           this.events[partialIdx] = bizEvent;
-          this.emitResult({ update: this.cloneEvent(bizEvent), append: [] });
+          this.emitResult({ update: this.cloneEvent(bizEvent), append: [] }, true);
           this.consumerLen = this.events.length;
           return;
         }
       }
 
       this.events[partialIdx] = bizEvent;
-      this.emitResult({ update: this.cloneEvent(bizEvent), append: [] });
+      this.emitResult({ update: this.cloneEvent(bizEvent), append: [] }, true);
       this.consumerLen = this.events.length;
       return;
     }
@@ -552,7 +569,7 @@ export class SxmlParser {
     }
 
     this.events.push(bizEvent);
-    this.emitResolveResult(entry.rawTextEventIndex, bizEvent);
+    this.emitResolveResult(entry.rawTextEventIndex, bizEvent, false, true);
   }
 
   /**
@@ -603,14 +620,14 @@ export class SxmlParser {
           if (parent.useDefaultHandler && entry.useDefaultHandler) {
             parent.pendingChildren.push(bizEvent);
             this.events[partialIdx] = bizEvent;
-            this.emitResult({ update: this.cloneEvent(bizEvent), append: [] });
+            this.emitResult({ update: this.cloneEvent(bizEvent), append: [] }, true);
             this.consumerLen = this.events.length;
             continue;
           }
         }
 
         this.events[partialIdx] = bizEvent;
-        this.emitResult({ update: this.cloneEvent(bizEvent), append: [] });
+        this.emitResult({ update: this.cloneEvent(bizEvent), append: [] }, true);
         this.consumerLen = this.events.length;
         continue;
       }
@@ -642,7 +659,7 @@ export class SxmlParser {
       }
 
       this.events.push(bizEvent);
-      this.emitResolveResult(entry.rawTextEventIndex, bizEvent);
+      this.emitResolveResult(entry.rawTextEventIndex, bizEvent, false, true);
     }
   }
 
@@ -728,28 +745,38 @@ export class SxmlParser {
     return { ...ev };
   }
 
+  private cloneTextUpdateOrClear(event: SxmlEvent): SxmlEvent | null {
+    if (event.type !== 'text') return this.cloneEvent(event);
+    return (event as TextEvent).content.length === 0 ? null : this.cloneEvent(event);
+  }
+
   /** Emit a text result: tells consumer a text event was created or updated */
   private emitTextResult(commit: { eventIndex: number; offset: number }): void {
     if (commit.eventIndex < 0) return;
 
     if (this.consumerLen === 0 && this.events.length > 0) {
       // Consumer hasn't seen any events yet — use append for the first one
-      this.emitResult({ append: [this.cloneEvent(this.events[0])] });
+      this.emitResult({ append: [this.cloneEvent(this.events[0])] }, false);
       this.consumerLen = 1;
     } else if (commit.eventIndex < this.consumerLen) {
       // Consumer already has this event — use update
-      this.emitResult({ update: this.cloneEvent(this.events[commit.eventIndex]), append: [] });
+      this.emitResult({ update: this.cloneEvent(this.events[commit.eventIndex]), append: [] }, false);
     } else {
       // New event consumer hasn't seen
-      this.emitResult({ append: [this.cloneEvent(this.events[commit.eventIndex])] });
+      this.emitResult({ append: [this.cloneEvent(this.events[commit.eventIndex])] }, false);
       this.consumerLen = this.events.length;
     }
   }
 
   /** Emit a resolve result: text truncated + business event appended */
-  private emitResolveResult(textEventIndex: number, bizEvent: SxmlEvent | null, appendOnly: boolean = false): void {
+  private emitResolveResult(
+    textEventIndex: number,
+    bizEvent: SxmlEvent | null,
+    appendOnly: boolean = false,
+    lastConfirm: boolean = false
+  ): void {
     const append: SxmlEvent[] = [];
-    let update: SxmlEvent | undefined = undefined;
+    let update: SxmlEvent | null | undefined = undefined;
 
     // Determine whether the text event at textEventIndex should be
     // sent as an update (replaces consumer's last event) or as append.
@@ -767,7 +794,7 @@ export class SxmlParser {
           if (this.events[i].type !== 'text') { blocked = true; break; }
         }
         if (!blocked) {
-          update = this.cloneEvent(textEv);
+          update = this.cloneTextUpdateOrClear(textEv);
         } else if (textContent.length > 0) {
           append.push(this.cloneEvent(textEv));
         }
@@ -780,9 +807,9 @@ export class SxmlParser {
     if (bizEvent) append.push(bizEvent);
 
     if (appendOnly) {
-      this.emitResult({ update, append: [] });
+      this.emitResult({ update, append: [] }, lastConfirm);
     } else {
-      this.emitResult({ update, append });
+      this.emitResult({ update, append }, lastConfirm);
     }
 
     this.consumerLen = this.events.length;
@@ -805,6 +832,7 @@ export class SxmlParser {
           be.content = ((be.content as string) || '') + this.pendingText;
           const result: SxmlResult = { update: this.cloneEvent(be), append: [] };
           this.pendingText = '';
+          this.lastConfirmStable = false;
           return result;
         }
       }
@@ -817,6 +845,7 @@ export class SxmlParser {
       te.content += this.pendingText;
       const result: SxmlResult = { update: { type: 'text', content: te.content }, append: [] };
       this.pendingText = '';
+      this.lastConfirmStable = false;
       return result;
     } else {
       // New event
@@ -824,13 +853,20 @@ export class SxmlParser {
       this.pendingText = '';
       this.events.push(te);
       this.consumerLen = this.events.length;
+      this.lastConfirmStable = false;
       return { append: [this.cloneEvent(te)] };
     }
   }
 
-  private emitResult(result: SxmlResult): void {
+  private emitResult(result: SxmlResult, lastConfirm: boolean = false): void {
     if (result.update === undefined && result.append.length === 0) return;
-    this.resultQueue.push(result);
+    this.resultQueue.push({ result, lastConfirm });
+  }
+
+  private dequeueResult(): SxmlResult {
+    const queued = this.resultQueue.shift()!;
+    this.lastConfirmStable = queued.lastConfirm;
+    return queued.result;
   }
 
   private resolvePendingIfReady(): void {
@@ -840,7 +876,7 @@ export class SxmlParser {
     this.pendingResolve = null;
 
     if (this.resultQueue.length > 0) {
-      resolve(this.resultQueue.shift()!);
+      resolve(this.dequeueResult());
     } else {
       const flushed = this.flushPendingTextOutput();
       if (flushed) {

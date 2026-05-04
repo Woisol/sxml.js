@@ -107,7 +107,8 @@ describe('reset()', () => {
     const events: any[] = [];
     let r: SxmlResult | null;
     while ((r = parser.tryPull()) !== null) {
-      if (r.update) events[events.length - 1] = r.update;
+      if (r.update === null) events.pop();
+      else if (r.update !== undefined) events[events.length - 1] = r.update;
       events.push(...r.append);
     }
 

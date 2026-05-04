@@ -23,7 +23,9 @@ export function collectSync(chunks: string[], config?: SxmlConfig): SxmlResult[]
 export function buildEvents(results: SxmlResult[]) {
   const events: any[] = [];
   for (const r of results) {
-    if (r.update) {
+    if (r.update === null) {
+      events.pop();
+    } else if (r.update !== undefined) {
       events[events.length - 1] = r.update;
     }
     events.push(...r.append);

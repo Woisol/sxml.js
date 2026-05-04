@@ -129,12 +129,13 @@ interface SxmlConfig {
  * 增量 Patch：指示消费方如何更新其事件列表
  *
  * 消费方维护一个 SxmlEvent[]，对每个 SxmlResult 执行：
- *   if (result.update) events[events.length - 1] = result.update;
+ *   if (result.update === null) events.pop();
+ *   else if (result.update !== undefined) events[events.length - 1] = result.update;
  *   events.push(...result.append);
  */
 interface SxmlResult {
   /** 替换事件列表最后一个元素（最多一个） */
-  update?: SxmlEvent;
+  update?: SxmlEvent | null;
 
   /** 追加到事件列表尾部（0~N 个） */
   append: SxmlEvent[];
@@ -623,7 +624,7 @@ config: { legalTags: ['outer', 'inner'] }  // 均使用默认 handler
 | `<outer>` | `{ append: [text("<outer>")] }` |
 | `before<inner>` | `{ update: text("<outer>before<inner>") }` |
 | `content</inner>` | `{ update: text("<outer>before"), append: [{ type:'inner', name:'inner', content:'content' }] }` |
-| `after</outer>` | `{ update: text(""), append: [{ type:'outer', name:'outer', content:'beforeafter', inner:'content' }] }` |
+| `after</outer>` | `{ update: null, append: [{ type:'outer', name:'outer', content:'beforeafter', inner:'content' }] }` |
 
 最终消费方事件列表：
 ```js
@@ -827,7 +828,7 @@ interface BusinessEvent {
 
 /** 增量 Patch */
 interface SxmlResult {
-  update?: SxmlEvent;
+  update?: SxmlEvent | null;
   append: SxmlEvent[];
 }
 
@@ -884,3 +885,4 @@ interface OpenTagEntry {
 5. **嵌套同名标签**: 支持，通过标签栈正确匹配
 6. **Children 顺序**: 文本和业务事件交替出现时保持 XML 原始顺序，由 TagHandler 决定如何处理
 7. **legalTags 优先级**: legalTags > tagCharPattern；提供 legalTags 时 tagCharPattern 不生效
+

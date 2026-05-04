@@ -99,8 +99,8 @@ export interface BusinessEvent {
 
 /** Incremental patch returned by pull() / tryPull() */
 export interface SxmlResult {
-  /** Replace the last event in the consumer's event list */
-  update?: SxmlEvent;
+  /** Replace the last event in the consumer's event list. null clears it. */
+  update?: SxmlEvent | null;
   /** Append to the consumer's event list (0..N items) */
   append: SxmlEvent[];
 }

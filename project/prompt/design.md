@@ -43,7 +43,7 @@
 │  - 未知标签（非 legalTags 内）：回退为 text 输出           │
 │                                                          │
 │  对外接口: pull() / tryPull()                            │
-│  返回格式: { update?: SxmlEvent, append: SxmlEvent[] } │
+│  返回格式: { update?: SxmlEvent | null, append: SxmlEvent[] } │
 └──────────────────────┬──────────────────────────────────┘
                        │
                        │ L3 消费 L2 的事件，做标签识别、结构组装、text 合并
@@ -225,7 +225,9 @@ for (const chunk of chunks) {
   parser.write(chunk);
   let result;
   while ((result = parser.tryPull()) !== null) {
-    if (result.update) {
+    if (result.update === null) {
+      events.pop();
+    } else if (result.update !== undefined) {
       events[events.length - 1] = result.update;
     }
     events.push(...result.append);

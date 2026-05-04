@@ -65,7 +65,7 @@ Consumer
 
 ```typescript
 interface SxmlResult {
-  update?: SxmlEvent;     // 替换最后一个事件
+  update?: SxmlEvent | null; // 替换最后一个事件；null 表示清除最后一个事件
   append: SxmlEvent[];    // 追加新事件
 }
 ```
@@ -73,7 +73,8 @@ interface SxmlResult {
 消费方按以下方式维护事件列表：
 
 ```typescript
-if (result.update) events[events.length - 1] = result.update;
+if (result.update === null) events.pop();
+else if (result.update !== undefined) events[events.length - 1] = result.update;
 events.push(...result.append);
 ```
 
@@ -85,7 +86,7 @@ events.push(...result.append);
 输入 chunks: '<think' → '>hello</think>'
 
 chunk 1: "text"     → { append: [text("<think")] }
-chunk 2: "hello</think>"  → { update: text(""), append: [think("hello")] }
+chunk 2: "hello</think>"  → { update: null, append: [think("hello")] }
 ```
 
 ### 即时确认（confirmAt: 'open'）
@@ -148,6 +149,8 @@ const parser = new SxmlParser({
 |------|------|
 | `write(chunk)` | 写入一个字符串 chunk |
 | `end()` | 标记流结束 |
+| `isEnd` | 只读 getter，当前流是否已结束 |
+| `lastConfirm` | 只读 getter，最后一个对外事件是否已稳定、不会再被后续 `update` 修改，可用于判断是否持久化 |
 | `tryPull()` | 同步拉取下一个结果，无结果时返回 `null` |
 | `pull()` | 异步拉取，返回 `Promise<SxmlResult \| null>` |
 | `reset()` | 重置到初始状态 |

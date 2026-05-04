@@ -65,7 +65,7 @@ Incremental patches telling the consumer how to update its event list:
 
 ```typescript
 interface SxmlResult {
-  update?: SxmlEvent;     // replace the last event
+  update?: SxmlEvent | null; // replace the last event; null clears it
   append: SxmlEvent[];    // append new events
 }
 ```
@@ -73,7 +73,8 @@ interface SxmlResult {
 Consumer event list maintenance:
 
 ```typescript
-if (result.update) events[events.length - 1] = result.update;
+if (result.update === null) events.pop();
+else if (result.update !== undefined) events[events.length - 1] = result.update;
 events.push(...result.append);
 ```
 
@@ -85,7 +86,7 @@ Unclosed tags stream as raw text. When the tag closes, the raw text is truncated
 Input chunks: '<think' → '>hello</think>'
 
 chunk 1: "<think"     → { append: [text("<think")] }
-chunk 2: "hello</think>"  → { update: text(""), append: [think("hello")] }
+chunk 2: "hello</think>"  → { update: null, append: [think("hello")] }
 ```
 
 ### Instant Confirmation (confirmAt: 'open')
@@ -148,6 +149,8 @@ const parser = new SxmlParser({
 |--------|-------------|
 | `write(chunk)` | Write a string chunk |
 | `end()` | Signal end of stream |
+| `isEnd` | Read-only getter indicating whether the stream has ended |
+| `lastConfirm` | Read-only getter indicating whether the last public event is stable and will not be changed by later `update` patches; useful for persistence |
 | `tryPull()` | Pull next result synchronously, returns `null` if none available |
 | `pull()` | Pull next result asynchronously, returns `Promise<SxmlResult \| null>` |
 | `reset()` | Reset parser to initial state |

@@ -7,7 +7,7 @@
 LLM 流式输出时，XML 标签（如 `<think>`、`<tool_call>`）可能任意分布在不同的 chunk 中。传统的 SAX/StAX 解析器通常假设输入是完整的，无法很好地处理这种场景。sxml.js 专为此设计：
 
 - 接收随意分割的字符串 chunk，即时输出可消费的解析结果
-- 未闭合的标签先以纯文本形式输出，闭合后替换为结构化事件
+- 两种确认模式：`confirmAt:'close'`（默认）—— 标签闭合后产出结构化事件；`confirmAt:'open'` —— 开标签即输出事件，后续文本流式更新其内容
 - 标签可嵌套，默认 1 层，子标签自动收纳为父标签的属性
 
 ## 安装
@@ -88,6 +88,23 @@ chunk 1: "text"     → { append: [text("<think")] }
 chunk 2: "hello</think>"  → { update: text(""), append: [think("hello")] }
 ```
 
+### 即时确认（confirmAt: 'open'）
+
+`confirmAt:'open'` 模式的标签（如 `<think>`）在开标签时立即输出业务事件，后续文本流式更新事件内容，无需等待闭合标签。
+
+```
+legalTags: [{ name: 'think', confirmAt: 'open' }]
+输入: before<think>hello</think>after
+
+输出序列:
+  1. { append: [text("before"), think(content="")] }
+  2. { update: think(content="hello") }          ← 文本流式更新
+  3. { update: think(content="hello") }          ← 闭合确认
+  4. { append: [text("after")] }
+```
+
+这对需要即时展示标签状态的场景非常有用：比如 `<think>` 出现后，前端可立即进入"思考中"状态，内容逐字追加，不再需要 `\r` 回溯覆盖。
+
 ### 默认标签处理器
 
 `legalTags` 中的标签自动使用默认处理器，产出形如 `{ type, name, ...attrs, content }` 的事件。嵌套的子标签被收纳为父标签的属性（当两者均使用默认处理器时）。
@@ -139,12 +156,23 @@ const parser = new SxmlParser({
 
 | 选项 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `legalTags` | `string[]` | — | 合法标签白名单，仅这些标签会被解析 |
+| `legalTags` | `LegalTagConfig[]` | — | 合法标签白名单。每个条目可为字符串（`confirmAt:'close'`）或 `{ name, confirmAt }` 对象 |
 | `tagCharPattern` | `RegExp` | `/^[a-zA-Z0-9_\-.:]$/` | 标签名字符正则（`legalTags` 未提供时生效） |
 | `tagHandlers` | `Record<string, TagHandler>` | — | 自定义标签处理器 |
 | `maxNestingDepth` | `number` | `1` | 最大嵌套解析深度 |
 | `maxBufferSize` | `number` | `1048576` | 缓冲区最大字节数 |
 | `errorStrategy` | `ErrorStrategy` | `lenient` | 错误处理策略 |
+
+### LegalTagConfig
+
+每个 `legalTags` 条目可为字符串或对象：
+
+```typescript
+type LegalTagConfig = string | { name: string; confirmAt: 'open' | 'close' };
+```
+
+- 字符串简写 → 等同于 `{ name: 'tagname', confirmAt: 'close' }`
+- `{ name: 'think', confirmAt: 'open' }` → 开标签即输出业务事件，内容流式更新
 
 ### ErrorStrategy
 

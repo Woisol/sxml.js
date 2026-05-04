@@ -48,12 +48,28 @@ export class SxmlParser {
   private pendingResolve: ((value: SxmlResult | null) => void) | null = null;
   private ended: boolean = false;
   private consumerLen: number = 0; // how many events consumer has seen
+  private confirmAtOpenSet: Set<string> = new Set();
 
   constructor(config: SxmlConfig) {
     this.tagHandlers = config.tagHandlers ?? {};
 
+    // Normalize legalTags: extract tag names for tokenizer, track confirmAt:'open' entries
+    const tagNames: string[] = [];
+    if (config.legalTags) {
+      for (const entry of config.legalTags) {
+        if (typeof entry === 'string') {
+          tagNames.push(entry);
+        } else {
+          tagNames.push(entry.name);
+          if (entry.confirmAt === 'open') {
+            this.confirmAtOpenSet.add(entry.name);
+          }
+        }
+      }
+    }
+
     this.tokenizer = new Tokenizer(
-      config.legalTags,
+      tagNames.length > 0 ? tagNames : undefined,
       config.tagCharPattern,
       config.maxBufferSize ?? DEFAULT_CONFIG.maxBufferSize,
       config.errorStrategy ?? DEFAULT_CONFIG.errorStrategy,
@@ -139,6 +155,9 @@ export class SxmlParser {
 
       // Immediately process L2 output
       this.flushL2Events();
+
+      // After each L2 event, flush any pending text into confirm-at-open tag
+      this.flushTextToConfirmAtOpen();
     }
 
     // Flush any remaining text
@@ -146,6 +165,24 @@ export class SxmlParser {
     if (flushed) {
       this.pendingText += flushed;
     }
+    this.flushTextToConfirmAtOpen();
+  }
+
+  /** Redirect pendingText to the confirm-at-open biz event at stack top. */
+  private flushTextToConfirmAtOpen(): void {
+    if (this.pendingText.length === 0) return;
+    if (this.tagStack.length === 0) return;
+    const top = this.tagStack[this.tagStack.length - 1];
+    if (top.bizEventConsumerIndex < 0) return;
+
+    const bizIdx = top.childrenStartIndex - 1;
+    if (bizIdx < 0 || bizIdx >= this.events.length) return;
+    const be = this.events[bizIdx] as BusinessEvent;
+    be.content = ((be.content as string) || '') + this.pendingText;
+    this.pendingText = '';
+
+    // Emit an update so the consumer sees the live content
+    this.emitResult({ update: this.cloneEvent(be), append: [] });
   }
 
   private flushL2Events(): void {
@@ -235,7 +272,62 @@ export class SxmlParser {
       depth: this.tagStack.length,
       pendingChildren: [],
       useDefaultHandler: !this.tagHandlers[name],
+      bizEventConsumerIndex: -1,
     };
+
+    // Confirm-at-open: emit partial biz event immediately if not being absorbed
+    const shouldEmitPartial =
+      this.confirmAtOpenSet.has(name) &&
+      !(this.tagStack.length > 0 &&
+        this.tagStack[this.tagStack.length - 1].useDefaultHandler &&
+        entry.useDefaultHandler);
+
+    if (shouldEmitPartial) {
+      // Build partial business event with empty children
+      const handler = this.tagHandlers[name] ?? DefaultTagHandler;
+      const partialBiz = handler.build(name, { ...attributes }, []);
+      if (partialBiz) {
+        // Only truncate if we're actually emitting the partial
+        this.truncateTextAt(result.eventIndex, rawTextStartOffset);
+        this.events.push(partialBiz);
+        entry.childrenStartIndex = this.events.length; // children start AFTER partial
+
+        // Emit text truncation update + partial biz append
+        const append: SxmlEvent[] = [];
+        let update: SxmlEvent | undefined;
+
+        if (this.consumerLen === 0 && result.eventIndex >= 0) {
+          // First event ever — append text (if non-empty) before partial biz
+          const te = this.events[result.eventIndex];
+          if (te.type === 'text' && (te as TextEvent).content.length > 0) {
+            append.push(this.cloneEvent(te));
+          }
+        } else if (result.eventIndex >= 0 && result.eventIndex < this.consumerLen) {
+          // Consumer already has this text event — update it
+          update = this.cloneEvent(this.events[result.eventIndex]);
+        } else if (result.eventIndex >= this.consumerLen && result.eventIndex < this.events.length) {
+          // New text event consumer hasn't seen — append it
+          const te = this.events[result.eventIndex];
+          if (te.type === 'text' && (te as TextEvent).content.length > 0) {
+            append.push(this.cloneEvent(te));
+          }
+        }
+
+        append.push(this.cloneEvent(partialBiz));
+        // Record where think lands in consumer's list:
+        //   if update → consumer's last event is replaced, then append runs
+        //   if !update → consumer appends everything
+        entry.bizEventConsumerIndex = update
+          ? this.consumerLen - 1 + append.length  // update replaces last, then append
+          : this.consumerLen + append.length - 1; // pure append, think is last
+
+        this.emitResult({ update, append });
+        this.consumerLen = this.events.length;
+        this.tagStack.push(entry);
+        return;
+      }
+      // Handler returned null — fall through to normal confirm-at-close behavior
+    }
 
     this.tagStack.push(entry);
 
@@ -244,7 +336,26 @@ export class SxmlParser {
   }
 
   private handleElementClose(name: string): void {
-    this.commitPendingText();
+    // For confirm-at-open tags: text between <tag> and </tag> was accumulated
+    // via flushTextToConfirmAtOpen.  The pendingText flush for this close
+    // event may still include "</tagname>" at the end — strip it.
+    const top = this.tagStack.length > 0 ? this.tagStack[this.tagStack.length - 1] : null;
+    if (top && top.name === name && top.bizEventConsumerIndex >= 0) {
+      const closeLen = `</${name}>`.length;
+      if (this.pendingText.length >= closeLen) {
+        // Strip close tag text from the end; any remaining text before it
+        // gets redirected to the biz event
+        const textBefore = this.pendingText.slice(0, -closeLen);
+        if (textBefore.length > 0) {
+          const bizIdx = top.childrenStartIndex - 1;
+          (this.events[bizIdx] as BusinessEvent).content =
+            ((this.events[bizIdx] as BusinessEvent).content || '') + textBefore;
+        }
+      }
+      this.pendingText = '';
+    } else {
+      this.commitPendingText();
+    }
 
     // Find matching open tag
     let entryIdx = -1;
@@ -272,6 +383,40 @@ export class SxmlParser {
 
   /** Resolve a tag that never received its own close tag (mismatch recovery) */
   private resolveTagAsUnclosed(entry: OpenTagEntry, outerCloseTagLength: number): void {
+    // Confirm-at-open path
+    if (entry.bizEventConsumerIndex >= 0) {
+      const partialIdx = entry.childrenStartIndex - 1;
+      const accumulatedText = (this.events[partialIdx] as BusinessEvent).content || '';
+      const allChildren: SxmlEvent[] = [
+        ...(accumulatedText ? [{ type: 'text' as const, content: accumulatedText as string }] : []),
+        ...this.events.slice(entry.childrenStartIndex),
+        ...entry.pendingChildren,
+      ];
+
+      this.events.splice(entry.childrenStartIndex);
+
+      const handler = this.tagHandlers[entry.name] ?? DefaultTagHandler;
+      const bizEvent = handler.build(entry.name, entry.attributes, allChildren);
+      if (!bizEvent) return;
+
+      if (this.tagStack.length > 0) {
+        const parent = this.tagStack[this.tagStack.length - 1];
+        if (parent.useDefaultHandler && entry.useDefaultHandler) {
+          parent.pendingChildren.push(bizEvent);
+          this.events[partialIdx] = bizEvent;
+          this.emitResult({ update: this.cloneEvent(bizEvent), append: [] });
+          this.consumerLen = this.events.length;
+          return;
+        }
+      }
+
+      this.events[partialIdx] = bizEvent;
+      this.emitResult({ update: this.cloneEvent(bizEvent), append: [] });
+      this.consumerLen = this.events.length;
+      return;
+    }
+
+    // Normal path
     const textChildren = this.extractEndTextChildren(entry, outerCloseTagLength);
     const allChildren: SxmlEvent[] = [
       ...textChildren,
@@ -336,6 +481,43 @@ export class SxmlParser {
   // ============================================================
 
   private resolveTag(entry: OpenTagEntry, closeName: string): void {
+    // Confirm-at-open: text already accumulated in bizEvent.content via flushPendingTextOutput.
+    // Replace the partial biz event with the full one, emit update (not append).
+    if (entry.bizEventConsumerIndex >= 0) {
+      const partialIdx = entry.childrenStartIndex - 1;
+      // Pull accumulated text from the partial biz event and feed it to the handler
+      const accumulatedText = (this.events[partialIdx] as BusinessEvent).content || '';
+      const allChildren: SxmlEvent[] = [
+        ...(accumulatedText ? [{ type: 'text' as const, content: accumulatedText as string }] : []),
+        ...this.events.slice(entry.childrenStartIndex),
+        ...entry.pendingChildren,
+      ];
+
+      this.events.splice(entry.childrenStartIndex);
+
+      const handler = this.tagHandlers[entry.name] ?? DefaultTagHandler;
+      const bizEvent = handler.build(entry.name, entry.attributes, allChildren);
+      if (!bizEvent) return;
+
+      const parentDepth = this.tagStack.length;
+      if (parentDepth > 0) {
+        const parent = this.tagStack[this.tagStack.length - 1];
+        if (parent.useDefaultHandler && entry.useDefaultHandler) {
+          parent.pendingChildren.push(bizEvent);
+          this.events[partialIdx] = bizEvent;
+          this.emitResult({ update: this.cloneEvent(bizEvent), append: [] });
+          this.consumerLen = this.events.length;
+          return;
+        }
+      }
+
+      this.events[partialIdx] = bizEvent;
+      this.emitResult({ update: this.cloneEvent(bizEvent), append: [] });
+      this.consumerLen = this.events.length;
+      return;
+    }
+
+    // --- normal confirm-at-close path ---
     const closeTagLength = `</${closeName}>`.length;
     const textChildren = this.extractTextChildren(entry, closeTagLength);
 
@@ -400,7 +582,40 @@ export class SxmlParser {
     while (this.tagStack.length > 0) {
       const entry = this.tagStack.pop()!;
 
-      // No close tag, so the text from offset to end is the children content
+      // Confirm-at-open path — text already in bizEvent.content
+      if (entry.bizEventConsumerIndex >= 0) {
+        const partialIdx = entry.childrenStartIndex - 1;
+        const accumulatedText = (this.events[partialIdx] as BusinessEvent).content || '';
+        const allChildren: SxmlEvent[] = [
+          ...(accumulatedText ? [{ type: 'text' as const, content: accumulatedText as string }] : []),
+          ...this.events.slice(entry.childrenStartIndex),
+          ...entry.pendingChildren,
+        ];
+
+        this.events.splice(entry.childrenStartIndex);
+
+        const handler = this.tagHandlers[entry.name] ?? DefaultTagHandler;
+        const bizEvent = handler.build(entry.name, entry.attributes, allChildren);
+        if (!bizEvent) continue;
+
+        if (this.tagStack.length > 0) {
+          const parent = this.tagStack[this.tagStack.length - 1];
+          if (parent.useDefaultHandler && entry.useDefaultHandler) {
+            parent.pendingChildren.push(bizEvent);
+            this.events[partialIdx] = bizEvent;
+            this.emitResult({ update: this.cloneEvent(bizEvent), append: [] });
+            this.consumerLen = this.events.length;
+            continue;
+          }
+        }
+
+        this.events[partialIdx] = bizEvent;
+        this.emitResult({ update: this.cloneEvent(bizEvent), append: [] });
+        this.consumerLen = this.events.length;
+        continue;
+      }
+
+      // Normal path
       const textChildren = this.extractEndTextChildren(entry);
 
       const allChildren: SxmlEvent[] = [
@@ -506,6 +721,7 @@ export class SxmlParser {
 
   /** Create a snapshot copy of an event so results are immutable */
   private cloneEvent(ev: SxmlEvent): SxmlEvent {
+    // return structuredClone(ev);
     if (ev.type === 'text') {
       return { type: 'text', content: (ev as TextEvent).content };
     }
@@ -578,6 +794,21 @@ export class SxmlParser {
 
   private flushPendingTextOutput(): SxmlResult | null {
     if (this.pendingText.length === 0) return null;
+
+    // If a confirm-at-open tag is at stack top, redirect text to its biz event content
+    if (this.tagStack.length > 0) {
+      const top = this.tagStack[this.tagStack.length - 1];
+      if (top.bizEventConsumerIndex >= 0) {
+        const bizIdx = top.childrenStartIndex - 1;
+        if (bizIdx >= 0 && bizIdx < this.events.length) {
+          const be = this.events[bizIdx] as BusinessEvent;
+          be.content = ((be.content as string) || '') + this.pendingText;
+          const result: SxmlResult = { update: this.cloneEvent(be), append: [] };
+          this.pendingText = '';
+          return result;
+        }
+      }
+    }
 
     const lastIdx = this.events.length - 1;
     if (lastIdx >= 0 && this.events[lastIdx].type === 'text' && this.consumerLen > lastIdx) {

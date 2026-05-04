@@ -2,6 +2,9 @@
 // Public types
 // ============================================================
 
+/** Legal tag configuration: string = confirmAt:'close'; object = explicit mode */
+export type LegalTagConfig = string | { name: string; confirmAt: 'open' | 'close' };
+
 /** Error handling strategy */
 export enum ErrorStrategy {
   /** Throw on XML syntax errors (for testing) */
@@ -16,10 +19,15 @@ export enum ErrorStrategy {
 export interface SxmlConfig {
   /**
    * Whitelist of legal tag names.
-   * When provided, only tags in this list are parsed; others fall back to TEXT.
+   * Each entry can be a plain string (defaults to confirmAt:'close') or
+   * an object specifying the tag name and when to confirm:
+   *   - confirmAt:'close' (default) — emit business event when </tag> is seen
+   *   - confirmAt:'open' — emit a partial business event as soon as <tag> is seen,
+   *     then update it with content as text streams in, finalizing at </tag>
+   *
    * When omitted, falls back to tagCharPattern regex validation.
    */
-  legalTags?: string[];
+  legalTags?: LegalTagConfig[];
 
   /**
    * Regex for valid tag name characters.
@@ -145,4 +153,6 @@ export interface OpenTagEntry {
   pendingChildren: SxmlEvent[];
   /** Whether this tag uses the default handler */
   useDefaultHandler: boolean;
+  /** For confirmAt='open': the index of the partial biz event in the consumer's event list (-1 = close mode) */
+  bizEventConsumerIndex: number;
 }

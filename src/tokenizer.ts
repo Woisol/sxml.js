@@ -131,7 +131,7 @@ export class Tokenizer {
   }
 
   // ============================================================
-  // Character dispatch
+  // #region Character dispatch
   // ============================================================
 
   private processChar(ch: string): void {
@@ -151,7 +151,7 @@ export class Tokenizer {
   }
 
   // ============================================================
-  // State handlers
+  // #region State handlers
   // ============================================================
 
   private suspectStartPos: number = -1; // buffer position where '<' was seen
@@ -329,7 +329,7 @@ export class Tokenizer {
   }
 
   // ============================================================
-  // Helpers
+  // #region Helpers
   // ============================================================
 
   private isNameChar(ch: string): boolean {

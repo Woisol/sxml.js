@@ -7,4 +7,5 @@ export {
   TextEvent,
   BusinessEvent,
   ErrorStrategy,
+  LegalTagConfig,
 } from './types';

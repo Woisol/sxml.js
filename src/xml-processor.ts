@@ -10,9 +10,11 @@ export class XmlProcessor {
   private tagStack: string[] = [];
   private eventQueue: XmlEvent[] = [];
   private errorStrategy: ErrorStrategy;
+  private tryFallback: boolean = false;
 
-  constructor(errorStrategy: ErrorStrategy = ErrorStrategy.LENIENT) {
+  constructor(errorStrategy: ErrorStrategy = ErrorStrategy.LENIENT, tryFallback?: boolean) {
     this.errorStrategy = errorStrategy;
+    if (tryFallback !== undefined) this.tryFallback = tryFallback;
   }
 
   /** Push a L1 event into the processor */
@@ -52,6 +54,20 @@ export class XmlProcessor {
   /** Signal end of input. Handle unclosed tags. */
   end(): void {
     if (this.tagStack.length === 0) return;
+
+    if (this.tryFallback) {
+      // B/D: synthesize close events for all open tags (innermost first)
+      const unclosed = [...this.tagStack];
+      for (let i = unclosed.length - 1; i >= 0; i--) {
+        this.eventQueue.push({
+          type: 'elementClose',
+          name: unclosed[i],
+          _fallback: true,
+        } as any);
+      }
+      this.tagStack = [];
+      return;
+    }
 
     if (this.errorStrategy === ErrorStrategy.STRICT) {
       throw new Error(

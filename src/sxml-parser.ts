@@ -80,10 +80,12 @@ export class SxmlParser {
       config.maxBufferSize ?? DEFAULT_CONFIG.maxBufferSize,
       config.errorStrategy ?? DEFAULT_CONFIG.errorStrategy,
       config.maxNestingDepth ?? DEFAULT_CONFIG.maxNestingDepth,
+      config.tryFallback,
     );
 
     this.xmlProcessor = new XmlProcessor(
       config.errorStrategy ?? DEFAULT_CONFIG.errorStrategy,
+      config.tryFallback,
     );
   }
 
@@ -222,7 +224,7 @@ export class SxmlParser {
         break;
 
       case 'elementClose':
-        this.handleElementClose(event.name);
+        this.handleElementClose(event.name, (event as any)._fallback === true);
         break;
 
       case 'selfClose':
@@ -352,17 +354,18 @@ export class SxmlParser {
     this.emitTextResult(result);
   }
 
-  private handleElementClose(name: string): void {
+  private handleElementClose(name: string, isFallback: boolean = false): void {
     // For confirm-at-open tags: text between <tag> and </tag> was accumulated
     // via flushTextToConfirmAtOpen.  The pendingText flush for this close
     // event may still include "</tagname>" at the end — strip it.
     const top = this.tagStack.length > 0 ? this.tagStack[this.tagStack.length - 1] : null;
     if (top && top.name === name && top.bizEventConsumerIndex >= 0) {
-      const closeLen = `</${name}>`.length;
-      if (this.pendingText.length >= closeLen) {
+      // Fallback close tag is missing '>', so the raw text suffix is one char shorter
+      const closeTagSuffixLen = isFallback ? `</${name}>`.length - 1 : `</${name}>`.length;
+      if (this.pendingText.length >= closeTagSuffixLen) {
         // Strip close tag text from the end; any remaining text before it
         // gets redirected to the biz event
-        const textBefore = this.pendingText.slice(0, -closeLen);
+        const textBefore = this.pendingText.slice(0, -closeTagSuffixLen);
         if (textBefore.length > 0) {
           const bizIdx = top.childrenStartIndex - 1;
           (this.events[bizIdx] as BusinessEvent).content =
@@ -387,7 +390,7 @@ export class SxmlParser {
 
     // Resolve any inner tags (above the matching entry) as unclosed first.
     // They never received their own close tag (mismatch scenario).
-    const closeTagLength = `</${name}>`.length;
+    const closeTagLength = isFallback ? 0 : `</${name}>`.length;
     while (this.tagStack.length - 1 > entryIdx) {
       const inner = this.tagStack.pop()!;
       this.resolveTagAsUnclosed(inner, closeTagLength);
@@ -395,7 +398,7 @@ export class SxmlParser {
 
     // Resolve the matching entry with its correct close name
     const matched = this.tagStack.pop()!;
-    this.resolveTag(matched, name);
+    this.resolveTag(matched, name, isFallback);
   }
 
   /** Resolve a tag that never received its own close tag (mismatch recovery) */
@@ -497,7 +500,7 @@ export class SxmlParser {
   // Tag resolution
   // ============================================================
 
-  private resolveTag(entry: OpenTagEntry, closeName: string): void {
+  private resolveTag(entry: OpenTagEntry, closeName: string, isFallback: boolean = false): void {
     // Confirm-at-open: text already accumulated in bizEvent.content via flushPendingTextOutput.
     // Replace the partial biz event with the full one, emit update (not append).
     if (entry.bizEventConsumerIndex >= 0) {
@@ -535,7 +538,8 @@ export class SxmlParser {
     }
 
     // --- normal confirm-at-close path ---
-    const closeTagLength = `</${closeName}>`.length;
+    // Fallback close tags are missing from the raw text, so nothing to strip
+    const closeTagLength = isFallback ? 0 : `</${closeName}>`.length;
     const textChildren = this.extractTextChildren(entry, closeTagLength);
 
     // Combine with pending children (from absorbed sub-tags)

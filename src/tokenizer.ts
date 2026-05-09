@@ -23,6 +23,7 @@ export class Tokenizer {
 
   private depth: number = 0;
   private ended: boolean = false;
+  private tryFallback: boolean = false;
 
   constructor(
     legalTags?: string[],
@@ -30,11 +31,13 @@ export class Tokenizer {
     maxBufferSize?: number,
     errorStrategy?: ErrorStrategy,
     maxNestingDepth?: number,
+    tryFallback?: boolean,
   ) {
     if (legalTags && legalTags.length > 0) this.legalTags = legalTags;
     if (tagCharPattern) this.tagCharPattern = tagCharPattern;
     if (maxBufferSize !== undefined) this.maxBufferSize = maxBufferSize;
     if (maxNestingDepth !== undefined) this.maxNestingDepth = maxNestingDepth;
+    if (tryFallback !== undefined) this.tryFallback = tryFallback;
     // errorStrategy is used by L2, not L1 directly
   }
 
@@ -58,6 +61,31 @@ export class Tokenizer {
   end(): void {
     if (this.ended) return;
     this.ended = true;
+
+    if (this.tryFallback) {
+      if (this.state === TokenizerState.CLOSE_TAG_NAME && this.tagName) {
+        // A: </tag_name without > — synthesize close event
+        this.eventQueue.push({
+          type: 'elementClose',
+          name: this.tagName,
+          _bufferPos: this.buffer.length,
+          _fallback: true,
+        } as any);
+        this.flushedIndex = this.buffer.length;
+        this.depth = Math.max(0, this.depth - 1);
+        this.resetTagState();
+        this.state = TokenizerState.TEXT;
+        return;
+      }
+
+      if (this.state === TokenizerState.TAG_SUSPECTED || this.state === TokenizerState.CLOSE_TAG_NAME) {
+        // D: </ without tag name — discard, XmlProcessor.end() will close tags
+        this.flushedIndex = this.buffer.length;
+        this.resetTagState();
+        this.state = TokenizerState.TEXT;
+        return;
+      }
+    }
 
     // Flush any text in suspect state
     if (
@@ -102,6 +130,17 @@ export class Tokenizer {
   }
 
   flushPendingText(): string {
+    // When tryFallback is active and we're mid-close-tag, don't flush the
+    // raw close-tag characters — they'll be handled by end() instead.
+    if (
+      this.tryFallback &&
+      (this.state === TokenizerState.CLOSE_TAG_NAME || this.state === TokenizerState.TAG_SUSPECTED) &&
+      this.suspectStartPos >= this.flushedIndex
+    ) {
+      const text = this.buffer.substring(this.flushedIndex, this.suspectStartPos);
+      this.flushedIndex = this.suspectStartPos;
+      return text;
+    }
     const newText = this.buffer.substring(this.flushedIndex);
     this.flushedIndex = this.buffer.length;
     return newText;

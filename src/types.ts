@@ -62,6 +62,14 @@ export interface SxmlConfig {
    * @default 1
    */
   maxNestingDepth?: number;
+
+  /**
+   * When true, attempt to salvage incomplete close tags at end of input.
+   * Handles: </tag_name (missing >), </ (missing tag name), and unclosed open tags.
+   * Only affects end(); does not interact with errorStrategy.
+   * @default false
+   */
+  tryFallback?: boolean;
 }
 
 /** Default values for optional config fields */
@@ -69,6 +77,7 @@ export const DEFAULT_CONFIG: Required<Omit<SxmlConfig, 'legalTags' | 'tagCharPat
   maxBufferSize: 1048576,
   errorStrategy: ErrorStrategy.LENIENT,
   maxNestingDepth: 1,
+  tryFallback: false,
 };
 
 export const DEFAULT_TAG_CHAR_PATTERN = /^[a-zA-Z0-9_\-.:]$/;

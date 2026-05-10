@@ -20,6 +20,7 @@ export class Tokenizer {
   private attrName: string = '';
   private attrValue: string = '';
   private attributes: Record<string, string> = {};
+  private closeTagFallbackSuffix: boolean = false;
 
   private depth: number = 0;
   private ended: boolean = false;
@@ -113,6 +114,7 @@ export class Tokenizer {
     this.attrName = '';
     this.attrValue = '';
     this.attributes = {};
+    this.closeTagFallbackSuffix = false;
     this.depth = 0;
     this.ended = false;
   }
@@ -359,6 +361,8 @@ export class Tokenizer {
   private handleCloseTagName(ch: string): void {
     if (ch === '>') {
       this.emitElementClose();
+    } else if (this.tryFallback && this.validateTagName()) {
+      this.closeTagFallbackSuffix = true;
     } else if (this.isNameChar(ch)) {
       this.tagName += ch;
     } else {
@@ -407,6 +411,9 @@ export class Tokenizer {
       name: this.tagName,
       _bufferPos: this.buffer.length,
     };
+    if (this.closeTagFallbackSuffix) {
+      event._fallbackCloseTagLength = this.buffer.length - this.suspectStartPos;
+    }
     this.eventQueue.push(event);
     this.depth = Math.max(0, this.depth - 1);
     this.resetTagState();
@@ -431,6 +438,7 @@ export class Tokenizer {
     this.attrName = '';
     this.attrValue = '';
     this.attributes = {};
+    this.closeTagFallbackSuffix = false;
     this.suspectStartPos = -1;
   }
 

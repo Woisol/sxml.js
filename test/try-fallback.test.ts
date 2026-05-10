@@ -74,6 +74,51 @@ describe('tryFallback', () => {
       assert.strictEqual(tc.content, 'payload');
     });
 
+    it('should tolerate whitespace before > in a close tag', () => {
+      const parser = new SxmlParser({
+        legalTags: ['tool_call'],
+        tryFallback: true,
+      });
+      parser.write('<tool_call name="test">payload</tool_call >');
+      parser.end();
+      const events = buildFinalEvents(parser);
+
+      const tc = events.find((e: any) => e.type === 'tool_call');
+      assert.ok(tc, 'tool_call should be resolved');
+      assert.strictEqual(tc.name, 'test');
+      assert.strictEqual(tc.content, 'payload');
+    });
+
+    it('should tolerate stray ] before > in a close tag', () => {
+      const parser = new SxmlParser({
+        legalTags: ['tool_call'],
+        tryFallback: true,
+      });
+      parser.write('<tool_call name="test">payload</tool_call]>');
+      parser.end();
+      const events = buildFinalEvents(parser);
+
+      const tc = events.find((e: any) => e.type === 'tool_call');
+      assert.ok(tc, 'tool_call should be resolved');
+      assert.strictEqual(tc.name, 'test');
+      assert.strictEqual(tc.content, 'payload');
+    });
+
+    it('should tolerate extra text before > in a close tag', () => {
+      const parser = new SxmlParser({
+        legalTags: ['tool_call'],
+        tryFallback: true,
+      });
+      parser.write('<tool_call name="test">payload</tool_call xyz>');
+      parser.end();
+      const events = buildFinalEvents(parser);
+
+      const tc = events.find((e: any) => e.type === 'tool_call');
+      assert.ok(tc, 'tool_call should be resolved');
+      assert.strictEqual(tc.name, 'test');
+      assert.strictEqual(tc.content, 'payload');
+    });
+
     it('should handle close tag split across write/end boundary', () => {
       const parser = new SxmlParser({
         legalTags: ['tool_call'],
